@@ -1,0 +1,556 @@
+#include <stdio.h>   // Para funções de entrada/saída (printf, scanf, fgets)
+#include <stdlib.h>  // Para alocação de memória dinâmica (malloc, free)
+#include <string.h>  // Para manipulação de strings (strcpy, strcmp, strcspn)
+#include <ctype.h>   // Para manipulação de caracteres (tolower, não usado diretamente, mas útil para futuras melhorias)
+
+// Define o tamanho máximo para as strings de entrada, como títulos e nomes
+#define MAX_STR 100
+
+// Estrutura para representar um usuário na fila de espera por um livro
+typedef struct UsuarioFila {
+    char nome[MAX_STR];   // Nome do usuário
+    char cpf[15];         // CPF do usuário (considerando 11 dígitos + 2 para pontos/hífen + 1 para '\0')
+    struct UsuarioFila *proximo; // Ponteiro para o próximo usuário na fila
+} UsuarioFila;
+
+// Estrutura para representar a fila de espera de empréstimos para um livro específico
+typedef struct FilaEmprestimo {
+    UsuarioFila *frente; // Ponteiro para o primeiro usuário da fila (quem será atendido primeiro)
+    UsuarioFila *tras;   // Ponteiro para o último usuário da fila (onde novos usuários são adicionados)
+} FilaEmprestimo;
+
+// Estrutura para representar um livro
+typedef struct Livro {
+    char titulo[MAX_STR];          // Título do livro
+    char autor[MAX_STR];           // Autor do livro
+    char isbn[20];                 // Código ISBN do livro
+    int quantidadeDisponivel;      // Número de cópias disponíveis para empréstimo
+    FilaEmprestimo filaEspera;     // Fila de espera associada a este livro
+    struct Livro *proximo;         // Ponteiro para o próximo livro na lista encadeada
+} Livro;
+
+// Estrutura para representar a lista encadeada de todos os livros na biblioteca
+typedef struct ListaLivros {
+    Livro *primeiro; // Ponteiro para o primeiro livro da lista
+} ListaLivros;
+
+// --- Funções Auxiliares para Fila de Empréstimos ---
+
+/**
+ * @brief Inicializa uma fila de empréstimos, definindo seus ponteiros de frente e trás como NULL.
+ * @param fila Ponteiro para a estrutura FilaEmprestimo a ser inicializada.
+ */
+void inicializarFilaEmprestimo(FilaEmprestimo *fila) {
+    fila->frente = NULL;
+    fila->tras = NULL;
+}
+
+/**
+ * @brief Adiciona um novo usuário à fila de espera de um livro.
+ * @param fila Ponteiro para a FilaEmprestimo onde o usuário será adicionado.
+ * @param nome O nome do usuário.
+ * @param cpf O CPF do usuário.
+ */
+void enfileirar(FilaEmprestimo *fila, const char *nome, const char *cpf) {
+    UsuarioFila *novoUsuario = (UsuarioFila *)malloc(sizeof(UsuarioFila));
+    if (novoUsuario == NULL) {
+        printf("Erro de alocação de memória para usuário na fila.\n");
+        return;
+    }
+    strcpy(novoUsuario->nome, nome);
+    strcpy(novoUsuario->cpf, cpf);
+    novoUsuario->proximo = NULL; // O novo usuário é sempre o último, então seu próximo é NULL
+
+    if (fila->tras == NULL) { // Se a fila estiver vazia, o novo usuário é o primeiro e o último
+        fila->frente = novoUsuario;
+        fila->tras = novoUsuario;
+    } else { // Caso contrário, adiciona o novo usuário ao final da fila
+        fila->tras->proximo = novoUsuario;
+        fila->tras = novoUsuario;
+    }
+    printf("Usuário %s adicionado à fila de espera.\n", nome);
+}
+
+/**
+ * @brief Remove o primeiro usuário da fila de espera de um livro.
+ * @param fila Ponteiro para a FilaEmprestimo de onde o usuário será removido.
+ * @return Retorna um ponteiro para o UsuarioFila removido, ou NULL se a fila estiver vazia.
+ */
+UsuarioFila *desenfileirar(FilaEmprestimo *fila) {
+    if (fila->frente == NULL) { // Se a fila estiver vazia, não há o que remover
+        return NULL;
+    }
+    UsuarioFila *usuarioDesenfileirado = fila->frente; // Pega o primeiro usuário
+    fila->frente = fila->frente->proximo; // O próximo usuário se torna o novo primeiro
+    if (fila->frente == NULL) { // Se a fila ficou vazia após a remoção, o 'tras' também deve ser NULL
+        fila->tras = NULL;
+    }
+    return usuarioDesenfileirado; // Retorna o usuário que foi removido
+}
+
+/**
+ * @brief Verifica se uma fila de empréstimos está vazia.
+ * @param fila Ponteiro para a FilaEmprestimo a ser verificada.
+ * @return Retorna 1 (verdadeiro) se a fila estiver vazia, 0 (falso) caso contrário.
+ */
+int filaVazia(FilaEmprestimo *fila) {
+    return (fila->frente == NULL);
+}
+
+/**
+ * @brief Libera toda a memória alocada para os usuários em uma fila de empréstimos.
+ * @param fila Ponteiro para a FilaEmprestimo a ser liberada.
+ */
+void liberarFila(FilaEmprestimo *fila) {
+    UsuarioFila *atual = fila->frente;
+    UsuarioFila *proximo;
+    while (atual != NULL) {
+        proximo = atual->proximo; // Salva o próximo antes de liberar o atual
+        free(atual);             // Libera a memória do usuário atual
+        atual = proximo;         // Move para o próximo usuário
+    }
+    fila->frente = NULL; // Reseta os ponteiros da fila
+    fila->tras = NULL;
+}
+
+// --- Funções para Lista de Livros ---
+
+/**
+ * @brief Inicializa a lista de livros, definindo seu ponteiro 'primeiro' como NULL.
+ * @param lista Ponteiro para a estrutura ListaLivros a ser inicializada.
+ */
+void inicializarListaLivros(ListaLivros *lista) {
+    lista->primeiro = NULL;
+}
+
+/**
+ * @brief Limpa o buffer de entrada (stdin) para evitar problemas com caracteres residuais.
+ * É útil após o uso de scanf para garantir que o próximo fgets leia uma nova linha.
+ */
+void limparBuffer() {
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF);
+}
+
+/**
+ * @brief Cadastra um novo livro na lista da biblioteca.
+ * Solicita ao usuário os detalhes do livro e o adiciona ao final da lista.
+ * @param lista Ponteiro para a ListaLivros onde o novo livro será adicionado.
+ */
+void cadastrarLivro(ListaLivros *lista) {
+    Livro *novoLivro = (Livro *)malloc(sizeof(Livro));
+    if (novoLivro == NULL) {
+        printf("Erro de alocação de memória para livro.\n");
+        return;
+    }
+
+    printf("\n--- Cadastro de Livro ---\n");
+    printf("Título: ");
+    fgets(novoLivro->titulo, MAX_STR, stdin);
+    novoLivro->titulo[strcspn(novoLivro->titulo, "\n")] = 0; // Remove o caractere de nova linha
+
+    printf("Autor: ");
+    fgets(novoLivro->autor, MAX_STR, stdin);
+    novoLivro->autor[strcspn(novoLivro->autor, "\n")] = 0; // Remove o caractere de nova linha
+
+    printf("ISBN: ");
+    fgets(novoLivro->isbn, 20, stdin);
+    novoLivro->isbn[strcspn(novoLivro->isbn, "\n")] = 0; // Remove o caractere de nova linha
+
+    printf("Quantidade Disponível: ");
+    scanf("%d", &novoLivro->quantidadeDisponivel);
+    limparBuffer(); // Limpa o buffer após scanf
+
+    inicializarFilaEmprestimo(&novoLivro->filaEspera); // Inicializa a fila de espera para o novo livro
+    novoLivro->proximo = NULL; // O novo livro é adicionado ao final, então seu próximo é NULL
+
+    if (lista->primeiro == NULL) { // Se a lista estiver vazia, o novo livro é o primeiro
+        lista->primeiro = novoLivro;
+    } else { // Caso contrário, percorre a lista até o final e adiciona o novo livro
+        Livro *atual = lista->primeiro;
+        while (atual->proximo != NULL) {
+            atual = atual->proximo;
+        }
+        atual->proximo = novoLivro;
+    }
+    printf("Livro \"%s\" cadastrado com sucesso!\n", novoLivro->titulo);
+}
+
+/**
+ * @brief Remove um livro da lista da biblioteca.
+ * O livro só pode ser removido se não houver usuários na sua fila de espera.
+ * @param lista Ponteiro para a ListaLivros de onde o livro será removido.
+ */
+void removerLivro(ListaLivros *lista) {
+    char tituloBusca[MAX_STR];
+    printf("\n--- Remover Livro ---\n");
+    printf("Digite o título do livro a ser removido: ");
+    fgets(tituloBusca, MAX_STR, stdin);
+    tituloBusca[strcspn(tituloBusca, "\n")] = 0; // Remove o caractere de nova linha
+
+    Livro *atual = lista->primeiro;
+    Livro *anterior = NULL;
+
+    // Percorre a lista para encontrar o livro
+    while (atual != NULL && strcmp(atual->titulo, tituloBusca) != 0) {
+        anterior = atual;
+        atual = atual->proximo;
+    }
+
+    if (atual == NULL) { // Livro não encontrado
+        printf("Livro \"%s\" não encontrado.\n", tituloBusca);
+        return;
+    }
+
+    // Verifica se há usuários na fila de espera antes de remover
+    if (!filaVazia(&atual->filaEspera)) {
+        printf("Não é possível remover o livro \"%s\" pois há usuários na fila de espera.\n", atual->titulo);
+        return;
+    }
+
+    if (anterior == NULL) { // Se o livro a ser removido é o primeiro da lista
+        lista->primeiro = atual->proximo;
+    } else { // Se o livro a ser removido está no meio ou no final da lista
+        anterior->proximo = atual->proximo;
+    }
+
+    liberarFila(&atual->filaEspera); // Libera a memória da fila de espera do livro
+    printf("Livro \"%s\" removido com sucesso.\n", atual->titulo);
+    free(atual); // Libera a memória do nó do livro
+}
+
+/**
+ * @brief Lista todos os livros cadastrados na biblioteca, incluindo suas filas de espera.
+ * @param lista Ponteiro para a ListaLivros a ser listada.
+ */
+void listarTodosLivros(ListaLivros *lista) {
+    if (lista->primeiro == NULL) {
+        printf("\nNenhum livro cadastrado.\n");
+        return;
+    }
+
+    printf("\n--- Livros Cadastrados ---\n");
+    Livro *atual = lista->primeiro;
+    while (atual != NULL) {
+        printf("Título: %s\n", atual->titulo);
+        printf("Autor: %s\n", atual->autor);
+        printf("ISBN: %s\n", atual->isbn);
+        printf("Quantidade Disponível: %d\n", atual->quantidadeDisponivel);
+        if (!filaVazia(&atual->filaEspera)) {
+            printf("Fila de Espera:\n");
+            UsuarioFila *userAtual = atual->filaEspera.frente;
+            while (userAtual != NULL) {
+                printf("  - Nome: %s, CPF: %s\n", userAtual->nome, userAtual->cpf);
+                userAtual = userAtual->proximo;
+            }
+        } else {
+            printf("Fila de Espera: Vazia\n");
+        }
+        printf("--------------------------\n");
+        atual = atual->proximo;
+    }
+}
+
+/**
+ * @brief Solicita um empréstimo de um livro.
+ * Se o livro estiver disponível, a quantidade é decrementada.
+ * Caso contrário, o usuário é adicionado à fila de espera do livro.
+ * @param lista Ponteiro para a ListaLivros onde o livro será buscado.
+ */
+void solicitarEmprestimo(ListaLivros *lista) {
+    char tituloBusca[MAX_STR];
+    char nomeUsuario[MAX_STR];
+    char cpfUsuario[15];
+
+    printf("\n--- Solicitar Empréstimo ---\n");
+    printf("Digite o título do livro para empréstimo: ");
+    fgets(tituloBusca, MAX_STR, stdin);
+    tituloBusca[strcspn(tituloBusca, "\n")] = 0; // Remove o caractere de nova linha
+
+    Livro *livroEncontrado = NULL;
+    Livro *atual = lista->primeiro;
+    // Busca o livro na lista
+    while (atual != NULL) {
+        if (strcmp(atual->titulo, tituloBusca) == 0) {
+            livroEncontrado = atual;
+            break;
+        }
+        atual = atual->proximo;
+    }
+
+    if (livroEncontrado == NULL) {
+        printf("Livro \"%s\" não encontrado.\n", tituloBusca);
+        return;
+    }
+
+    printf("Nome do usuário: ");
+    fgets(nomeUsuario, MAX_STR, stdin);
+    nomeUsuario[strcspn(nomeUsuario, "\n")] = 0; // Remove o caractere de nova linha
+
+    printf("CPF do usuário: ");
+    fgets(cpfUsuario, 15, stdin);
+    cpfUsuario[strcspn(cpfUsuario, "\n")] = 0; // Remove o caractere de nova linha
+
+    if (livroEncontrado->quantidadeDisponivel > 0) {
+        livroEncontrado->quantidadeDisponivel--; // Decrementa a quantidade disponível
+        printf("Empréstimo de \"%s\" realizado com sucesso para %s.\n", livroEncontrado->titulo, nomeUsuario);
+    } else {
+        // Se não houver cópias disponíveis, adiciona o usuário à fila de espera
+        enfileirar(&livroEncontrado->filaEspera, nomeUsuario, cpfUsuario);
+        printf("Livro \"%s\" indisponível. %s adicionado à fila de espera.\n", livroEncontrado->titulo, nomeUsuario);
+    }
+}
+
+/**
+ * @brief Libera um empréstimo de um livro.
+ * Se houver usuários na fila de espera, o primeiro é atendido e a quantidade disponível aumenta.
+ * Caso contrário, apenas a quantidade disponível é incrementada.
+ * @param lista Ponteiro para a ListaLivros onde o livro será buscado.
+ */
+void liberarEmprestimo(ListaLivros *lista) {
+    char tituloBusca[MAX_STR];
+    printf("\n--- Liberar Empréstimo ---\n");
+    printf("Digite o título do livro para liberar empréstimo: ");
+    fgets(tituloBusca, MAX_STR, stdin);
+    tituloBusca[strcspn(tituloBusca, "\n")] = 0; // Remove o caractere de nova linha
+
+    Livro *livroEncontrado = NULL;
+    Livro *atual = lista->primeiro;
+    // Busca o livro na lista
+    while (atual != NULL) {
+        if (strcmp(atual->titulo, tituloBusca) == 0) {
+            livroEncontrado = atual;
+            break;
+        }
+        atual = atual->proximo;
+    }
+
+    if (livroEncontrado == NULL) {
+        printf("Livro \"%s\" não encontrado.\n", tituloBusca);
+        return;
+    }
+
+    if (!filaVazia(&livroEncontrado->filaEspera)) {
+        // Se há alguém na fila, atende o primeiro e incrementa a quantidade disponível
+        UsuarioFila *usuarioAtendido = desenfileirar(&livroEncontrado->filaEspera);
+        if (usuarioAtendido != NULL) {
+            livroEncontrado->quantidadeDisponivel++;
+            printf("Empréstimo de \"%s\" liberado. Usuário %s (CPF: %s) atendido da fila de espera.\n",
+                   livroEncontrado->titulo, usuarioAtendido->nome, usuarioAtendido->cpf);
+            free(usuarioAtendido); // Libera a memória do usuário que foi atendido
+        }
+    } else {
+        // Se não há ninguém na fila, apenas incrementa a quantidade disponível
+        livroEncontrado->quantidadeDisponivel++;
+        printf("Empréstimo de \"%s\" liberado. Ninguém na fila de espera.\n", livroEncontrado->titulo);
+    }
+}
+
+/**
+ * @brief Busca um livro na lista por seu título e exibe seus detalhes.
+ * @param lista Ponteiro para a ListaLivros onde o livro será buscado.
+ */
+void buscarLivroPorTitulo(ListaLivros *lista) {
+    char tituloBusca[MAX_STR];
+    printf("\n--- Buscar Livro por Título ---\n");
+    printf("Digite o título do livro a ser buscado: ");
+    fgets(tituloBusca, MAX_STR, stdin);
+    tituloBusca[strcspn(tituloBusca, "\n")] = 0; // Remove o caractere de nova linha
+
+    Livro *livroEncontrado = NULL;
+    Livro *atual = lista->primeiro;
+    // Percorre a lista para encontrar o livro
+    while (atual != NULL) {
+        if (strcmp(atual->titulo, tituloBusca) == 0) {
+            livroEncontrado = atual;
+            break;
+        }
+        atual = atual->proximo;
+    }
+
+    if (livroEncontrado == NULL) {
+        printf("Livro \"%s\" não encontrado.\n", tituloBusca);
+    } else {
+        printf("\n--- Livro Encontrado ---\n");
+        printf("Título: %s\n", livroEncontrado->titulo);
+        printf("Autor: %s\n", livroEncontrado->autor);
+        printf("ISBN: %s\n", livroEncontrado->isbn);
+        printf("Quantidade Disponível: %d\n", livroEncontrado->quantidadeDisponivel);
+        if (!filaVazia(&livroEncontrado->filaEspera)) {
+            printf("Fila de Espera:\n");
+            UsuarioFila *userAtual = livroEncontrado->filaEspera.frente;
+            while (userAtual != NULL) {
+                printf("  - Nome: %s, CPF: %s\n", userAtual->nome, userAtual->cpf);
+                userAtual = userAtual->proximo;
+            }
+        } else {
+            printf("Fila de Espera: Vazia\n");
+        }
+        printf("--------------------------\n");
+    }
+}
+
+/**
+ * @brief Troca o conteúdo de dois nós de livro.
+ * Esta função é usada internamente pela função de ordenação.
+ * @param a Ponteiro para o primeiro nó de livro.
+ * @param b Ponteiro para o segundo nó de livro.
+ */
+void trocarLivros(Livro *a, Livro *b) {
+    // Variáveis temporárias para armazenar os dados de 'a'
+    char tempTitulo[MAX_STR];
+    char tempAutor[MAX_STR];
+    char tempISBN[20];
+    int tempQuantidade;
+    FilaEmprestimo tempFila; // A estrutura da fila é copiada (ponteiros frente/tras)
+
+    // Salva os dados de 'a' em variáveis temporárias
+    strcpy(tempTitulo, a->titulo);
+    strcpy(tempAutor, a->autor);
+    strcpy(tempISBN, a->isbn);
+    tempQuantidade = a->quantidadeDisponivel;
+    tempFila = a->filaEspera;
+
+    // Copia os dados de 'b' para 'a'
+    strcpy(a->titulo, b->titulo);
+    strcpy(a->autor, b->autor);
+    strcpy(a->isbn, b->isbn);
+    a->quantidadeDisponivel = b->quantidadeDisponivel;
+    a->filaEspera = b->filaEspera;
+
+    // Copia os dados temporários (originais de 'a') para 'b'
+    strcpy(b->titulo, tempTitulo);
+    strcpy(b->autor, tempAutor);
+    strcpy(b->isbn, tempISBN);
+    b->quantidadeDisponivel = tempQuantidade;
+    b->filaEspera = tempFila;
+}
+
+/**
+ * @brief Ordena os livros na lista por título ou autor usando o algoritmo Bubble Sort.
+ * Nota: Para listas encadeadas, a troca de dados dos nós é mais simples que a troca de ponteiros.
+ * @param lista Ponteiro para a ListaLivros a ser ordenada.
+ * @param tipoOrdenacao Um inteiro que indica o critério de ordenação:
+ * 1 para ordenar por Título.
+ * 2 para ordenar por Autor.
+ */
+void ordenarLivros(ListaLivros *lista, int tipoOrdenacao) {
+    if (lista->primeiro == NULL || lista->primeiro->proximo == NULL) {
+        printf("\nNão há livros suficientes para ordenar.\n");
+        return;
+    }
+
+    int trocado;
+    Livro *ptr1;
+    Livro *lptr = NULL; // Ponteiro para o último elemento já ordenado
+
+    // Loop principal do Bubble Sort
+    do {
+        trocado = 0;
+        ptr1 = lista->primeiro; // Começa do início da lista
+
+        // Percorre a lista até o penúltimo elemento não ordenado
+        while (ptr1->proximo != lptr) {
+            int comparacao = 0;
+            if (tipoOrdenacao == 1) { // Ordenar por título
+                comparacao = strcmp(ptr1->titulo, ptr1->proximo->titulo);
+            } else if (tipoOrdenacao == 2) { // Ordenar por autor
+                comparacao = strcmp(ptr1->autor, ptr1->proximo->autor);
+            }
+
+            if (comparacao > 0) { // Se os elementos estão fora de ordem, troca-os
+                trocarLivros(ptr1, ptr1->proximo); // Troca o conteúdo dos nós
+                trocado = 1; // Indica que uma troca ocorreu
+            }
+            ptr1 = ptr1->proximo; // Move para o próximo elemento
+        }
+        lptr = ptr1; // O último elemento percorrido já está na sua posição final
+    } while (trocado); // Continua enquanto houverem trocas (indicando que a lista não está totalmente ordenada)
+
+    printf("\nLivros ordenados com sucesso por %s.\n", (tipoOrdenacao == 1) ? "Título" : "Autor");
+}
+
+/**
+ * @brief Libera toda a memória alocada dinamicamente para a lista de livros e suas filas de espera.
+ * @param lista Ponteiro para a ListaLivros a ser liberada.
+ */
+void liberarMemoria(ListaLivros *lista) {
+    Livro *atual = lista->primeiro;
+    Livro *proximo;
+    while (atual != NULL) {
+        proximo = atual->proximo;        // Salva o próximo antes de liberar o atual
+        liberarFila(&atual->filaEspera); // Libera a fila de espera associada a este livro
+        free(atual);                     // Libera a memória do nó do livro
+        atual = proximo;                 // Move para o próximo livro
+    }
+    lista->primeiro = NULL; // Garante que a lista esteja vazia após a liberação
+    printf("\nMemória liberada com sucesso.\n");
+}
+
+/**
+ * @brief Exibe o menu principal do sistema e gerencia as interações do usuário.
+ */
+void menu() {
+    ListaLivros minhaBiblioteca;
+    inicializarListaLivros(&minhaBiblioteca); // Inicializa a lista de livros vazia
+
+    int escolha;
+    do {
+        printf("\n--- Sistema de Controle de Biblioteca Acadêmica ---\n");
+        printf("1. Cadastrar Livro\n");
+        printf("2. Remover Livro\n");
+        printf("3. Listar Todos os Livros\n");
+        printf("4. Solicitar Empréstimo\n");
+        printf("5. Liberar Empréstimo\n");
+        printf("6. Buscar Livro por Título\n");
+        printf("7. Ordenar Livros por Título\n");
+        printf("8. Ordenar Livros por Autor\n");
+        printf("0. Sair\n");
+        printf("Escolha uma opção: ");
+        scanf("%d", &escolha);
+        limparBuffer(); // Limpa o buffer após scanf para evitar problemas com fgets
+
+        switch (escolha) {
+            case 1:
+                cadastrarLivro(&minhaBiblioteca);
+                break;
+            case 2:
+                removerLivro(&minhaBiblioteca);
+                break;
+            case 3:
+                listarTodosLivros(&minhaBiblioteca);
+                break;
+            case 4:
+                solicitarEmprestimo(&minhaBiblioteca);
+                break;
+            case 5:
+                liberarEmprestimo(&minhaBiblioteca);
+                break;
+            case 6:
+                buscarLivroPorTitulo(&minhaBiblioteca);
+                break;
+            case 7:
+                ordenarLivros(&minhaBiblioteca, 1); // 1 para ordenar por título
+                break;
+            case 8:
+                ordenarLivros(&minhaBiblioteca, 2); // 2 para ordenar por autor
+                break;
+            case 0:
+                printf("Saindo do sistema. Até mais!\n");
+                break;
+            default:
+                printf("Opção inválida. Tente novamente.\n");
+        }
+    } while (escolha != 0); // O loop continua até o usuário escolher a opção '0' (Sair)
+
+    liberarMemoria(&minhaBiblioteca); // Libera toda a memória alocada antes de encerrar o programa
+}
+
+/**
+ * @brief Função principal do programa.
+ * Chama a função 'menu' para iniciar o sistema da biblioteca.
+ */
+int main() {
+    menu(); // Inicia a interface do usuário
+    return 0;
+}
